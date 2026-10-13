@@ -1,0 +1,106 @@
+name: Update speed cameras
+
+on:
+  schedule:
+    - cron: "0 3 * * 1"      # co poniedziałek 03:00 UTC
+  workflow_dispatch:          # ręczne uruchomienie
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        country:
+          - austria
+          - belgium
+          - bulgaria
+          - croatia
+          - cyprus
+          - czech-republic
+          - denmark
+          - estonia
+          - finland
+          - france
+          - germany
+          - greece
+          - hungary
+          - ireland-and-northern-ireland
+          - italy
+          - latvia
+          - lithuania
+          - luxembourg
+          - malta
+          - netherlands
+          - poland
+          - portugal
+          - romania
+          - slovakia
+          - slovenia
+          - spain
+          - sweden
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y osmium-tool
+          pip install osmium
+
+      - name: Download and extract
+        run: |
+          curl -fL --retry 3 -o in.osm.pbf \
+            "https://download.geofabrik.de/europe/${{ matrix.country }}-latest.osm.pbf"
+          osmium tags-filter in.osm.pbf \
+            n/highway=speed_camera n/enforcement r/type=enforcement \
+            -o filtered.osm.pbf
+          rm in.osm.pbf
+          python3 scripts/convert.py filtered.osm.pbf "${{ matrix.country }}.json"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pts-${{ matrix.country }}
+          path: ${{ matrix.country }}.json
+
+  publish:
+    needs: extract
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: pts-*
+          merge-multiple: true
+          path: data
+
+      - name: Build tiles
+        run: python3 scripts/merge.py
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - id: deploy
+        uses: actions/deploy-pages@v4
