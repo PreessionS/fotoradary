@@ -17,6 +17,7 @@ concurrency:
 jobs:
   extract:
     runs-on: ubuntu-latest
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
@@ -67,9 +68,12 @@ jobs:
             "https://download.geofabrik.de/europe/${{ matrix.country }}-latest.osm.pbf"
           osmium tags-filter in.osm.pbf \
             n/highway=speed_camera n/enforcement r/type=enforcement \
-            -o filtered.osm.pbf
+            -o cams.osm.pbf
+          osmium tags-filter in.osm.pbf \
+            w/highway=motorway,motorway_link,trunk,trunk_link,primary,primary_link,secondary,secondary_link,tertiary,tertiary_link,unclassified,residential,living_street,road \
+            -o roads.osm.pbf
           rm in.osm.pbf
-          python3 scripts/convert.py filtered.osm.pbf "${{ matrix.country }}.json"
+          python3 scripts/convert.py cams.osm.pbf roads.osm.pbf "${{ matrix.country }}.json"
 
       - uses: actions/upload-artifact@v4
         with:
