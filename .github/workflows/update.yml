@@ -49,6 +49,7 @@ jobs:
           - slovenia
           - spain
           - sweden
+          - england
     steps:
       - uses: actions/checkout@v4
 
