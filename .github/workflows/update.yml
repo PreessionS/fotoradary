@@ -57,6 +57,10 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Country name
+        id: n
+        run: echo "name=$(basename '${{ matrix.country }}')" >> "$GITHUB_OUTPUT"
+
       - name: Install tools
         run: |
           sudo apt-get update
@@ -65,6 +69,7 @@ jobs:
 
       - name: Download and extract
         run: |
+          NAME="${{ steps.n.outputs.name }}"
           curl -fL --retry 3 -o in.osm.pbf \
             "https://download.geofabrik.de/europe/${{ matrix.country }}-latest.osm.pbf"
           osmium tags-filter in.osm.pbf \
@@ -74,12 +79,12 @@ jobs:
             w/highway=motorway,motorway_link,trunk,trunk_link,primary,primary_link,secondary,secondary_link,tertiary,tertiary_link,unclassified,residential,living_street,road \
             -o roads.osm.pbf
           rm in.osm.pbf
-          python3 scripts/convert.py cams.osm.pbf roads.osm.pbf "${{ matrix.country }}.json"
+          python3 scripts/convert.py cams.osm.pbf roads.osm.pbf "${NAME}.json"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: pts-${{ matrix.country }}
-          path: ${{ matrix.country }}.json
+          name: pts-${{ steps.n.outputs.name }}
+          path: ${{ steps.n.outputs.name }}.json
 
   publish:
     needs: extract
