@@ -49,7 +49,7 @@ jobs:
           - slovenia
           - spain
           - sweden
-          - england
+          - great-britain/england
     steps:
       - uses: actions/checkout@v4
 
