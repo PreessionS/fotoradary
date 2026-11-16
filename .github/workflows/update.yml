@@ -20,7 +20,7 @@ jobs:
     timeout-minutes: 180
     strategy:
       fail-fast: false
-      max-parallel: 6
+      max-parallel: 3
       matrix:
         country:
           - austria
@@ -71,10 +71,18 @@ jobs:
       - name: Download and extract
         run: |
           NAME="${{ steps.n.outputs.name }}"
-          curl -fL --retry 6 --retry-delay 30 --retry-all-errors \
-            --connect-timeout 30 \
-            -o in.osm.pbf \
-            "https://download.geofabrik.de/europe/${{ matrix.country }}-latest.osm.pbf"
+          URL="https://download.geofabrik.de/europe/${{ matrix.country }}-latest.osm.pbf"
+          sleep $((RANDOM % 45))
+          ok=0
+          for i in 1 2 3 4 5 6; do
+            if curl -fL --connect-timeout 30 -o in.osm.pbf "$URL"; then
+              ok=1; break
+            fi
+            echo "Próba $i nieudana, czekam $((i*60))s"
+            rm -f in.osm.pbf
+            sleep $((i*60))
+          done
+          [ "$ok" = 1 ] || { echo "Pobieranie nieudane"; exit 1; }
           ls -lh in.osm.pbf
           osmium tags-filter in.osm.pbf \
             n/highway=speed_camera n/enforcement r/type=enforcement \
