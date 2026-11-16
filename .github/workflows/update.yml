@@ -20,6 +20,7 @@ jobs:
     timeout-minutes: 180
     strategy:
       fail-fast: false
+      max-parallel: 6
       matrix:
         country:
           - austria
@@ -70,8 +71,11 @@ jobs:
       - name: Download and extract
         run: |
           NAME="${{ steps.n.outputs.name }}"
-          curl -fL --retry 3 -o in.osm.pbf \
+          curl -fL --retry 6 --retry-delay 30 --retry-all-errors \
+            --connect-timeout 30 \
+            -o in.osm.pbf \
             "https://download.geofabrik.de/europe/${{ matrix.country }}-latest.osm.pbf"
+          ls -lh in.osm.pbf
           osmium tags-filter in.osm.pbf \
             n/highway=speed_camera n/enforcement r/type=enforcement \
             -o cams.osm.pbf
