@@ -1,105 +1,221 @@
+
 name: Update speed cameras
 
 on:
   schedule:
-    - cron: "0 3 * * 1"      # co poniedziałek 03:00 UTC
-  workflow_dispatch:          # ręczne uruchomienie
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
 
 permissions:
   contents: read
   pages: write
   id-token: write
+  actions: read
 
 concurrency:
   group: pages
   cancel-in-progress: false
 
 jobs:
-  extract:
+  setup:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    outputs:
+      countries: ${{ steps.c.outputs.countries }}
+    steps:
+      - id: c
+        run: |
+          echo 'countries=["austria","belgium","bulgaria","croatia","cyprus","czech-republic","denmark","estonia","finland","france","germany","greece","hungary","ireland-and-northern-ireland","italy","latvia","lithuania","luxembourg","malta","netherlands","poland","portugal","romania","slovakia","slovenia","spain","sweden","united-kingdom/england"]' >> "$GITHUB_OUTPUT"
+
+  extract:
+    needs: setup
     strategy:
       fail-fast: false
       max-parallel: 3
       matrix:
-        country:
-          - austria
-          - belgium
-          - bulgaria
-          - croatia
-          - cyprus
-          - czech-republic
-          - denmark
-          - estonia
-          - finland
-          - france
-          - germany
-          - greece
-          - hungary
-          - ireland-and-northern-ireland
-          - italy
-          - latvia
-          - lithuania
-          - luxembourg
-          - malta
-          - netherlands
-          - poland
-          - portugal
-          - romania
-          - slovakia
-          - slovenia
-          - spain
-          - sweden
-          - united-kingdom/england
+        country: ${{ fromJSON(needs.setup.outputs.countries) }}
+    uses: ./.github/workflows/extract-country.yml
+    with:
+      country: ${{ matrix.country }}
+
+  find-missing:
+    needs: [setup, extract]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    outputs:
+      missing: ${{ steps.m.outputs.missing }}
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Country name
-        id: n
-        run: echo "name=$(basename '${{ matrix.country }}')" >> "$GITHUB_OUTPUT"
-
-      - name: Install tools
+      - id: m
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COUNTRIES: ${{ needs.setup.outputs.countries }}
         run: |
-          sudo apt-get update
-          sudo apt-get install -y osmium-tool
-          pip install osmium
+          have=$(gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts" \
+            --jq '.artifacts[].name' | jq -R . | jq -sc .)
 
-      - name: Download and extract
+          missing=$(jq -c --argjson have "$have" \
+            '[.[] | select(("pts-" + (split("/") | last)) as $n | ($have | any(. == $n)) | not)]' \
+            <<< "$COUNTRIES")
+
+          echo "Brakuje: $missing"
+          echo "missing=$missing" >> "$GITHUB_OUTPUT"
+
+  retry-1:
+    needs: [setup, find-missing]
+    if: ${{ !cancelled() && needs.find-missing.outputs.missing != '[]' }}
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        country: ${{ fromJSON(needs.find-missing.outputs.missing) }}
+    uses: ./.github/workflows/extract-country.yml
+    with:
+      country: ${{ matrix.country }}
+
+  check-1:
+    needs: [setup, retry-1]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    outputs:
+      missing: ${{ steps.m.outputs.missing }}
+    steps:
+      - id: m
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COUNTRIES: ${{ needs.setup.outputs.countries }}
         run: |
-          NAME="${{ steps.n.outputs.name }}"
-          URL="https://download.geofabrik.de/europe/${{ matrix.country }}-latest.osm.pbf"
-          sleep $((RANDOM % 45))
-          ok=0
-          for i in 1 2 3 4 5 6; do
-            if curl -fL --connect-timeout 30 -o in.osm.pbf "$URL"; then
-              ok=1; break
-            fi
-            echo "Próba $i nieudana, czekam $((i*60))s"
-            rm -f in.osm.pbf
-            sleep $((i*60))
-          done
-          [ "$ok" = 1 ] || { echo "Pobieranie nieudane"; exit 1; }
-          ls -lh in.osm.pbf
-          osmium tags-filter in.osm.pbf \
-            n/highway=speed_camera n/enforcement r/type=enforcement \
-            -o cams.osm.pbf
-          osmium tags-filter in.osm.pbf \
-            w/highway=motorway,motorway_link,trunk,trunk_link,primary,primary_link,secondary,secondary_link,tertiary,tertiary_link,unclassified,residential,living_street,road \
-            -o roads.osm.pbf
-          rm in.osm.pbf
-          python3 scripts/convert.py cams.osm.pbf roads.osm.pbf "${NAME}.json"
+          sleep 60
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: pts-${{ steps.n.outputs.name }}
-          path: ${{ steps.n.outputs.name }}.json
+          have=$(gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts" \
+            --jq '.artifacts[].name' | jq -R . | jq -sc .)
+
+          missing=$(jq -c --argjson have "$have" \
+            '[.[] | select(("pts-" + (split("/") | last)) as $n | ($have | any(. == $n)) | not)]' \
+            <<< "$COUNTRIES")
+
+          echo "Pozostałe braki: $missing"
+          echo "missing=$missing" >> "$GITHUB_OUTPUT"
+
+  retry-2:
+    needs: [setup, check-1]
+    if: ${{ !cancelled() && needs.check-1.outputs.missing != '[]' }}
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        country: ${{ fromJSON(needs.check-1.outputs.missing) }}
+    uses: ./.github/workflows/extract-country.yml
+    with:
+      country: ${{ matrix.country }}
+
+  check-2:
+    needs: [setup, retry-2]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    outputs:
+      missing: ${{ steps.m.outputs.missing }}
+    steps:
+      - id: m
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COUNTRIES: ${{ needs.setup.outputs.countries }}
+        run: |
+          sleep 120
+
+          have=$(gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts" \
+            --jq '.artifacts[].name' | jq -R . | jq -sc .)
+
+          missing=$(jq -c --argjson have "$have" \
+            '[.[] | select(("pts-" + (split("/") | last)) as $n | ($have | any(. == $n)) | not)]' \
+            <<< "$COUNTRIES")
+
+          echo "Pozostałe braki: $missing"
+          echo "missing=$missing" >> "$GITHUB_OUTPUT"
+
+  retry-3:
+    needs: [setup, check-2]
+    if: ${{ !cancelled() && needs.check-2.outputs.missing != '[]' }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        country: ${{ fromJSON(needs.check-2.outputs.missing) }}
+    uses: ./.github/workflows/extract-country.yml
+    with:
+      country: ${{ matrix.country }}
+
+  check-3:
+    needs: [setup, retry-3]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    outputs:
+      missing: ${{ steps.m.outputs.missing }}
+    steps:
+      - id: m
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COUNTRIES: ${{ needs.setup.outputs.countries }}
+        run: |
+          sleep 240
+
+          have=$(gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts" \
+            --jq '.artifacts[].name' | jq -R . | jq -sc .)
+
+          missing=$(jq -c --argjson have "$have" \
+            '[.[] | select(("pts-" + (split("/") | last)) as $n | ($have | any(. == $n)) | not)]' \
+            <<< "$COUNTRIES")
+
+          echo "Pozostałe braki: $missing"
+          echo "missing=$missing" >> "$GITHUB_OUTPUT"
+
+  retry-4:
+    needs: [setup, check-3]
+    if: ${{ !cancelled() && needs.check-3.outputs.missing != '[]' }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        country: ${{ fromJSON(needs.check-3.outputs.missing) }}
+    uses: ./.github/workflows/extract-country.yml
+    with:
+      country: ${{ matrix.country }}
+
+  final-check:
+    needs: [setup, retry-4]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    outputs:
+      missing: ${{ steps.m.outputs.missing }}
+    steps:
+      - id: m
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COUNTRIES: ${{ needs.setup.outputs.countries }}
+        run: |
+          sleep 30
+
+          have=$(gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts" \
+            --jq '.artifacts[].name' | jq -R . | jq -sc .)
+
+          missing=$(jq -c --argjson have "$have" \
+            '[.[] | select(("pts-" + (split("/") | last)) as $n | ($have | any(. == $n)) | not)]' \
+            <<< "$COUNTRIES")
+
+          echo "Końcowa kontrola: $missing"
+          echo "missing=$missing" >> "$GITHUB_OUTPUT"
 
   publish:
-    needs: extract
+    needs: [setup, final-check]
+    if: >-
+      ${{
+        !cancelled() &&
+        needs.final-check.result == 'success' &&
+        needs.final-check.outputs.missing == '[]'
+      }}
     runs-on: ubuntu-latest
     environment:
       name: github-pages
