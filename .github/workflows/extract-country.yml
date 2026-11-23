@@ -1,0 +1,135 @@
+
+name: Extract country
+
+on:
+  workflow_call:
+    inputs:
+      country:
+        required: true
+        type: string
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Country name
+        id: n
+        shell: bash
+        run: |
+          NAME="$(basename '${{ inputs.country }}')"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Install tools
+        timeout-minutes: 15
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y osmium-tool
+          python -m pip install --upgrade pip
+          pip install osmium
+
+      - name: Download Geofabrik data
+        shell: bash
+        timeout-minutes: 140
+        run: |
+          URL="https://download.geofabrik.de/europe/${{ inputs.country }}-latest.osm.pbf"
+
+          echo "Pobieranie: $URL"
+
+          SUCCESS=0
+
+          for ATTEMPT in 1 2 3 4 5 6; do
+            echo "Próba pobierania: $ATTEMPT/6"
+
+            rm -f in.osm.pbf in.osm.pbf.tmp
+
+            if curl \
+              --fail \
+              --location \
+              --show-error \
+              --connect-timeout 60 \
+              --retry 3 \
+              --retry-all-errors \
+              --retry-delay 20 \
+              --output in.osm.pbf.tmp \
+              "$URL"; then
+
+              if [ -s in.osm.pbf.tmp ]; then
+                mv in.osm.pbf.tmp in.osm.pbf
+                SUCCESS=1
+                break
+              fi
+            fi
+
+            rm -f in.osm.pbf.tmp
+
+            WAIT=$((ATTEMPT * 60))
+            echo "Błąd pobierania. Kolejna próba za ${WAIT}s"
+
+            if [ "$ATTEMPT" -lt 6 ]; then
+              sleep "$WAIT"
+            fi
+          done
+
+          if [ "$SUCCESS" -ne 1 ]; then
+            echo "::error::Nie udało się pobrać danych Geofabrik"
+            exit 1
+          fi
+
+          echo "Pobieranie zakończone."
+          ls -lh in.osm.pbf
+
+          osmium fileinfo in.osm.pbf
+
+      - name: Extract cameras
+        shell: bash
+        run: |
+          osmium tags-filter in.osm.pbf \
+            n/highway=speed_camera \
+            n/enforcement=maximum_speed \
+            n/enforcement=average_speed \
+            n/enforcement=traffic_signals \
+            r/type=enforcement \
+            -o cams.osm.pbf
+
+      - name: Extract roads
+        shell: bash
+        run: |
+          osmium tags-filter in.osm.pbf \
+            w/highway=motorway,motorway_link,trunk,trunk_link,primary,primary_link,secondary,secondary_link,tertiary,tertiary_link,unclassified,residential,living_street,road \
+            -o roads.osm.pbf
+
+          rm -f in.osm.pbf
+
+      - name: Convert to JSON
+        shell: bash
+        run: |
+          NAME="${{ steps.n.outputs.name }}"
+
+          python3 scripts/convert.py \
+            cams.osm.pbf \
+            roads.osm.pbf \
+            "${NAME}.json"
+
+          if [ ! -s "${NAME}.json" ]; then
+            echo "::error::Plik JSON jest pusty lub nie istnieje"
+            exit 1
+          fi
+
+          echo "Wygenerowano:"
+          ls -lh "${NAME}.json"
+
+      - name: Upload country artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pts-${{ steps.n.outputs.name }}
+          path: ${{ steps.n.outputs.name }}.json
+          if-no-files-found: error
+          retention-days: 7
